@@ -1,220 +1,180 @@
-#include <sys/types.h>
-#include <sys/socket.h>
-#include <arpa/inet.h>
-#include <netinet/in.h>
-#include <sys/stat.h>
-#include <sys/select.h>
-#include <errno.h>
-#include <unistd.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <netdb.h>
 #include <string.h>
-#include <fcntl.h>
-#include <signal.h>
+#include <unistd.h>
+#include <arpa/inet.h>
 #include <pthread.h>
-#include <sqlite3.h>
 
-#define IP_ADDR "127.0.0.1"
+#define PORT 8080
+#define MAX_CLIENTS 100
+#define BUFFER_SIZE 1024
 
-#define PORT 9090
-#define MAX_CLIENTS 10
-#define BUFF_SIZE 1024
-
-typedef struct{
-    int client_socket;
-    char username[50];
-} Client;
-
-Client clients[MAX_CLIENTS]={0};
-pthread_mutex_t client_mutex = PTHREAD_MUTEX_INITIALIZER;
-sqlite3 *db;
-
-
-void broadcast_msg(int sender_sock, const char* msg, int msg_len, const char* recipient)
-{
-    pthread_mutex_lock(&client_mutex);
-    for(int i=0; i<MAX_CLIENTS; i++)
-    {
-        if(clients[i].client_socket !=0 && strcmp(clients[i].username, recipient)==0)
-        {
-            send(clients[i].client_socket, msg, msg_len, 0);
-            pthread_mutex_unlock(&client_mutex);
-            return;
-        }
-    }
-
-    char *errmsg=0;
-    char sql[BUFF_SIZE];
-    snprintf(sql, sizeof(sql), "INSERT INTO messages(recipient, message) VALUES('%s', '%s');", recipient, msg);
-    if(sqlite3_exec(db, sql, 0, 0, &errmsg)!=SQLITE_OK)
-    {
-        fprintf(stderr, "[SERVER] -> failed to insert message: %s\n", errmsg);
-        sqlite3_free(errmsg);
-    }
-    pthread_mutex_unlock(&client_mutex);
-}
-
-void send_offline_messages(const char* username, int client_socket)
-{
-    char* errmsg=0;
-    char sql[BUFF_SIZE];
-    snprintf(sql, sizeof(sql), "SELECT message FROM messages WHERE recipient = '%s';", username);
-
-    sqlite3_stmt *stmt;
-    if(sqlite3_prepare_v2(db, sql, -1, &stmt, 0)==SQLITE_OK)
-    {
-        while(sqlite3_step(stmt)==SQLITE_ROW)
-        {
-            const char * message = (const char*)sqlite3_column_text(stmt, 0);
-            send(client_socket, message, strlen(message), 0);
-        }
-        sqlite3_finalize(stmt);
-
-        snprintf(sql, sizeof(sql), "DELETE FROM messages WHERE recipient = '%s';", username);
-        if(sqlite3_exec(db, sql, 0, 0, &errmsg)!=SQLITE_OK)
-        {
-            fprintf(stderr, "[SERVER] -> Failed to Delete Message: %s\n", errmsg);
-            sqlite3_free(errmsg);
-        }
-    }
-    else
-    {
-        fprintf(stderr, "[SERVER] -> Failed to Fetch message: %s\n", sqlite3_errmsg(db));
-    }
-}
-
-void* handle_client(void *arg)
-{
-    int client_sock = *(int*)arg;
-    char buff[BUFF_SIZE];
-    int valread;
-
-    read(client_sock, buff, BUFF_SIZE);
-
-    char username[50];
-    sscanf(buff, "%s", username);
-    printf("[SERVER] -> User %s, Authentificated\n", username);
-
-    pthread_mutex_lock(&client_mutex);
-    for(int i=0; i<MAX_CLIENTS; i++)
-    {
-        if(clients[i].client_socket==0)
-        {
-            clients[i].client_socket = client_sock;
-            strncpy(clients[i].username, username, sizeof(clients[i].username)-1);
-            send_offline_messages(username, client_sock);
-            break;
-        }
-    }
-
-    pthread_mutex_unlock(&client_mutex);
-
-    while((valread=read(client_sock, buff, BUFF_SIZE))>0)
-    {
-        buff[valread]='\0';
-        char recipient[50];
-        sscanf(buff, "%s", recipient);
-        broadcast_msg(client_sock, buff, valread, recipient);
-    }
-
-    pthread_mutex_lock(&client_mutex);
-
-    for(int i=0; i<MAX_CLIENTS; i++)
-    {
-        if(clients[i].client_socket==client_sock)
-        {
-            clients[i].client_socket=0;
-            break;
-        }
-    }
-    pthread_mutex_unlock(&client_mutex);
-
-    close(client_sock);
-    printf("[SERVER] -> Client disconnected\n");
-    return NULL;
-}
-
-int main()
-{
-    int server_socket, new_socket;
+typedef struct {
     struct sockaddr_in address;
-    pthread_t thread_id;
-    int addrlen = sizeof(address);
-    int op=1;
+    int sockfd;
+    int uid;
+    char name[32];
+} client_t;
 
-    if(sqlite3_open("messages.db", &db))
-    {
-        fprintf(stderr, "SQL -> Can't open database: %s\n", sqlite3_errmsg(db));
-        return(1);
-    }
+client_t *clients[MAX_CLIENTS];
+pthread_mutex_t clients_mutex = PTHREAD_MUTEX_INITIALIZER;
 
-    char* errmsg=0;
-    const char* sql = "CREATE TABLE IF NOT EXISTS messages (recipient TEXT, message TEXT)";
-    if(sqlite3_exec(db, sql, 0, 0, &errmsg)!=SQLITE_OK)
-    {
-        fprintf(stderr, "SQL ERROR: %s\n", errmsg);
-        sqlite3_free(errmsg);
-        return(1);
-    }
+int uid=0;
+int clients_count=0;
 
-    server_socket=socket(AF_INET, SOCK_STREAM, 0);
-    
-    if(server_socket == 0)
-    {
-        perror("Socket");
-        exit(EXIT_FAILURE);
-    }
-
-    setsockopt(server_socket, SOL_SOCKET, SO_REUSEADDR, &op, sizeof(op));
-    setsockopt(new_socket, SOL_SOCKET, SO_REUSEADDR, &op, sizeof(op));
-
-    bzero(&address, sizeof(address));
-    address.sin_family=AF_INET;
-    address.sin_addr.s_addr=INADDR_ANY;
-    address.sin_port=htons(PORT);
-
-    if(bind(server_socket, (struct sockaddr*)&address, sizeof(address))<0)
-    {
-        perror("Bind");
-        close(server_socket);
-        exit(EXIT_FAILURE);
-    }
-
-    if(listen(server_socket, 5)<0)
-    {
-        perror("Listen");
-        close(server_socket);
-        exit(EXIT_FAILURE);
-    }
-
-    printf("Server up and running: %i\n", ntohs(address.sin_port));
-
-    while(1)
-    {
-        if((new_socket=accept(server_socket, (struct sockaddr*)&address, (socklen_t*)&addrlen))<0)
-        {
-            perror("Accept");
-            EXIT_FAILURE;
+void str_trim_lf(char* arr, int length) {
+    for (int i = 0; i < length; i++) {
+        if (arr[i] == '\n') {
+            arr[i] = '\0';
+            break;
         }
+    }
+}
 
-        printf("[SERVER] -> New connection, sockfd: %d, ip: %s, port: %d\n", new_socket, inet_ntoa(address.sin_addr), ntohs(address.sin_port));
+void print_ip_addr(struct sockaddr_in addr) {
+    printf("%d.%d.%d.%d",
+        addr.sin_addr.s_addr & 0xff,
+        (addr.sin_addr.s_addr & 0xff00) >> 8,
+        (addr.sin_addr.s_addr & 0xff0000) >> 16,
+        (addr.sin_addr.s_addr & 0xff000000) >> 24);
+}
 
-        pthread_mutex_lock(&client_mutex);
+void queue_add(client_t *cl) {
+    pthread_mutex_lock(&clients_mutex);
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+        if (!clients[i]) {
+            clients[i] = cl;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&clients_mutex);
+}
 
-        for(int i=0; i<MAX_CLIENTS; i++)
-        {
-            if(clients[i].client_socket==0)
-            {
-                clients[i].client_socket=new_socket;
-                pthread_create(&thread_id, NULL, handle_client, (void* )&new_socket);
-                pthread_detach(thread_id);
+void queue_remove(int uid) {
+    pthread_mutex_lock(&clients_mutex);
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+        if (clients[i]) {
+            if (clients[i]->uid == uid) {
+                clients[i] = NULL;
                 break;
             }
         }
-        pthread_mutex_unlock(&client_mutex);
     }
-    sqlite3_close(db);
-    return 0;
+    pthread_mutex_unlock(&clients_mutex);
+}
 
+void send_message(char *s, int uid) {
+    pthread_mutex_lock(&clients_mutex);
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+        if (clients[i]) {
+            if (clients[i]->uid != uid) {
+                if (write(clients[i]->sockfd, s, strlen(s)) < 0) {
+                    perror("ERROR: write to descriptor failed");
+                    break;
+                }
+            }
+        }
+    }
+    pthread_mutex_unlock(&clients_mutex);
+}
+
+void *handle_client(void *arg) {
+    char buff_out[BUFFER_SIZE];
+    char name[32];
+    int leave_flag = 0;
+
+    client_t *cli = (client_t *)arg;
+
+    if (recv(cli->sockfd, name, 32, 0) <= 0 || strlen(name) < 2 || strlen(name) >= 32 - 1) {
+        printf("Enter the name correctly\n");
+        leave_flag = 1;
+    } else {
+        strcpy(cli->name, name);
+        sprintf(buff_out, "%s has joined\n", cli->name);
+        printf("%s", buff_out);
+        send_message(buff_out, cli->uid);
+    }
+
+    bzero(buff_out, BUFFER_SIZE);
+
+    while (1) {
+        if (leave_flag) {
+            break;
+        }
+        int receive = recv(cli->sockfd, buff_out, BUFFER_SIZE, 0);
+        if (receive > 0) {
+            if (strlen(buff_out) > 0) {
+                send_message(buff_out, cli->uid);
+                str_trim_lf(buff_out, strlen(buff_out));
+                printf("%s -> %s\n", cli->name, buff_out);
+            }
+        } else if (receive == 0 || strcmp(buff_out, "exit") == 0) {
+            sprintf(buff_out, "%s has left\n", cli->name);
+            printf("%s", buff_out);
+            send_message(buff_out, cli->uid);
+            leave_flag = 1;
+        } else {
+            printf("ERROR: -1\n");
+            leave_flag = 1;
+        }
+
+        bzero(buff_out, BUFFER_SIZE);
+    }
+
+    close(cli->sockfd);
+    queue_remove(cli->uid);
+    free(cli);
+    pthread_detach(pthread_self());
+
+    return NULL;
+}
+
+int main() {
+    int sockfd, new_sockfd;
+    struct sockaddr_in server_addr, client_addr;
+    pthread_t tid;
+
+    sockfd = socket(AF_INET, SOCK_STREAM, 0);
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_addr.s_addr = INADDR_ANY;
+    server_addr.sin_port = htons(PORT);
+
+    bind(sockfd, (struct sockaddr*)&server_addr, sizeof(server_addr));
+
+    if (listen(sockfd, 10) < 0) {
+        perror("ERROR: listen");
+        return 1;
+    }
+
+    printf("=== WELCOME TO THE CHAT SERVER ===\n");
+
+    while (1) {
+        socklen_t clilen = sizeof(client_addr);
+        new_sockfd = accept(sockfd, (struct sockaddr*)&client_addr, &clilen);
+
+        if ((new_sockfd) < 0) {
+            perror("ERROR: accept");
+            return 1;
+        }
+
+        if ((clients_count + 1) == MAX_CLIENTS) {
+            printf("Max clients reached. Rejected: ");
+            print_ip_addr(client_addr);
+            printf(":%d\n", client_addr.sin_port);
+            close(new_sockfd);
+            continue;
+        }
+
+        client_t *cli = (client_t *)malloc(sizeof(client_t));
+        cli->address = client_addr;
+        cli->sockfd = new_sockfd;
+        cli->uid = uid++;
+
+        queue_add(cli);
+        pthread_create(&tid, NULL, &handle_client, (void*)cli);
+
+        sleep(1);
+    }
+
+    return 0;
 }

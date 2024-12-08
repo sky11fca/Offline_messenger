@@ -8,19 +8,18 @@
 #define PORT 8080
 #define MAX_CLIENTS 100
 #define BUFFER_SIZE 1024
+#define LOGFILE "chat_log.txt"
 
 typedef struct {
     struct sockaddr_in address;
     int sockfd;
     int uid;
-    char name[32];
 } client_t;
 
 client_t *clients[MAX_CLIENTS];
 pthread_mutex_t clients_mutex = PTHREAD_MUTEX_INITIALIZER;
-
-int uid=0;
-int clients_count=0;
+static _Atomic unsigned int clients_count = 0;
+static int uid = 10;
 
 void str_trim_lf(char* arr, int length) {
     for (int i = 0; i < length; i++) {
@@ -31,36 +30,12 @@ void str_trim_lf(char* arr, int length) {
     }
 }
 
-void print_ip_addr(struct sockaddr_in addr) {
-    printf("%d.%d.%d.%d",
-        addr.sin_addr.s_addr & 0xff,
-        (addr.sin_addr.s_addr & 0xff00) >> 8,
-        (addr.sin_addr.s_addr & 0xff0000) >> 16,
-        (addr.sin_addr.s_addr & 0xff000000) >> 24);
-}
-
-void queue_add(client_t *cl) {
-    pthread_mutex_lock(&clients_mutex);
-    for (int i = 0; i < MAX_CLIENTS; i++) {
-        if (!clients[i]) {
-            clients[i] = cl;
-            break;
-        }
+void log_message(char *message) {
+    FILE *file = fopen(LOGFILE, "a");
+    if (file) {
+        fprintf(file, "%s\n", message);
+        fclose(file);
     }
-    pthread_mutex_unlock(&clients_mutex);
-}
-
-void queue_remove(int uid) {
-    pthread_mutex_lock(&clients_mutex);
-    for (int i = 0; i < MAX_CLIENTS; i++) {
-        if (clients[i]) {
-            if (clients[i]->uid == uid) {
-                clients[i] = NULL;
-                break;
-            }
-        }
-    }
-    pthread_mutex_unlock(&clients_mutex);
 }
 
 void send_message(char *s, int uid) {
@@ -78,22 +53,75 @@ void send_message(char *s, int uid) {
     pthread_mutex_unlock(&clients_mutex);
 }
 
+void send_log_to_client(int sockfd) {
+    FILE *file = fopen(LOGFILE, "r");
+    if (file) {
+        char line[BUFFER_SIZE];
+        while (fgets(line, sizeof(line), file)) {
+            write(sockfd, line, strlen(line));
+        }
+        fclose(file);
+    }
+}
+
+char* get_line_from_log(int line_number) {
+    FILE *file = fopen(LOGFILE, "r");
+    if (!file) return NULL;
+
+    char *line = malloc(BUFFER_SIZE);
+    int current_line = 0;
+    while (fgets(line, BUFFER_SIZE, file)) {
+        if (++current_line == line_number) {
+            fclose(file);
+            str_trim_lf(line, strlen(line));
+            return line;
+        }
+    }
+
+    fclose(file);
+    free(line);
+    return NULL;
+}
+
+void queue_add(client_t *cl) {
+    pthread_mutex_lock(&clients_mutex);
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+        if (!clients[i]) {
+            clients[i] = cl;
+            clients_count++;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&clients_mutex);
+}
+
+void queue_remove(int uid) {
+    pthread_mutex_lock(&clients_mutex);
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+        if (clients[i]) {
+            if (clients[i]->uid == uid) {
+                clients[i] = NULL;
+                clients_count--;
+                break;
+            }
+        }
+    }
+    pthread_mutex_unlock(&clients_mutex);
+}
+
 void *handle_client(void *arg) {
     char buff_out[BUFFER_SIZE];
-    char name[32];
     int leave_flag = 0;
 
     client_t *cli = (client_t *)arg;
 
-    if (recv(cli->sockfd, name, 32, 0) <= 0 || strlen(name) < 2 || strlen(name) >= 32 - 1) {
-        printf("Enter the name correctly\n");
-        leave_flag = 1;
-    } else {
-        strcpy(cli->name, name);
-        sprintf(buff_out, "%s has joined\n", cli->name);
-        printf("%s", buff_out);
-        send_message(buff_out, cli->uid);
-    }
+    // Send log file to the client
+    send_log_to_client(cli->sockfd);
+
+    sprintf(buff_out, "Client %d has joined\n", cli->uid);
+    printf("%s", buff_out);
+    log_message(buff_out);
+    send_message(buff_out, cli->uid);
 
     bzero(buff_out, BUFFER_SIZE);
 
@@ -103,14 +131,31 @@ void *handle_client(void *arg) {
         }
         int receive = recv(cli->sockfd, buff_out, BUFFER_SIZE, 0);
         if (receive > 0) {
+            str_trim_lf(buff_out, strlen(buff_out));
             if (strlen(buff_out) > 0) {
+                if (strncmp(buff_out, "/r ", 3) == 0) {
+                    // Process reply command
+                    int line_number = atoi(buff_out + 3);
+                    char *message_start = strchr(buff_out + 3, ' ');
+                    if (message_start) {
+                        message_start++; // Move past the space
+                        char *line_message = get_line_from_log(line_number);
+                        if (line_message) {
+                            sprintf(buff_out, "Replied to: %s -> %s", line_message, message_start);
+                            free(line_message);
+                        } else {
+                            sprintf(buff_out, "Invalid line number: %d", line_number);
+                        }
+                    }
+                }
                 send_message(buff_out, cli->uid);
-                str_trim_lf(buff_out, strlen(buff_out));
-                printf("%s -> %s\n", cli->name, buff_out);
+                printf("Client %d -> %s\n", cli->uid, buff_out);
+                log_message(buff_out);
             }
         } else if (receive == 0 || strcmp(buff_out, "exit") == 0) {
-            sprintf(buff_out, "%s has left\n", cli->name);
+            sprintf(buff_out, "Client %d has left\n", cli->uid);
             printf("%s", buff_out);
+            log_message(buff_out);
             send_message(buff_out, cli->uid);
             leave_flag = 1;
         } else {
@@ -159,7 +204,11 @@ int main() {
 
         if ((clients_count + 1) == MAX_CLIENTS) {
             printf("Max clients reached. Rejected: ");
-            print_ip_addr(client_addr);
+            printf("%d.%d.%d.%d",
+                client_addr.sin_addr.s_addr & 0xff,
+                (client_addr.sin_addr.s_addr & 0xff00) >> 8,
+                (client_addr.sin_addr.s_addr & 0xff0000) >> 16,
+                (client_addr.sin_addr.s_addr & 0xff000000) >> 24);
             printf(":%d\n", client_addr.sin_port);
             close(new_sockfd);
             continue;

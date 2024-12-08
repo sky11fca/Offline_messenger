@@ -8,6 +8,15 @@
 #define PORT 8080
 #define BUFFER_SIZE 1024
 
+void str_trim_lf(char* arr, int length) {
+    for (int i = 0; i < length; i++) {
+        if (arr[i] == '\n') {
+            arr[i] = '\0';
+            break;
+        }
+    }
+}
+
 void *receive_handler(void *sock) {
     int sockfd = *((int *)sock);
     char buffer[BUFFER_SIZE];
@@ -47,7 +56,10 @@ int main() {
 
     while (1) {
         fgets(buffer, BUFFER_SIZE, stdin);
-        send(sockfd, buffer, strlen(buffer), 0);
+        str_trim_lf(buffer, strlen(buffer));  // Trim the newline character
+        if (strlen(buffer) > 0) {  // Ensure message is not empty
+            send(sockfd, buffer, strlen(buffer), 0);
+        }
         memset(buffer, 0, BUFFER_SIZE);
     }
 

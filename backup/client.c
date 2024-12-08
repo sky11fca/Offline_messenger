@@ -1,85 +1,57 @@
-#include <sys/types.h>
-#include <sys/socket.h>
-#include <sys/stat.h>
-#include <signal.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
-#include <errno.h>
-#include <unistd.h>
 #include <stdio.h>
-#include <fcntl.h>
 #include <stdlib.h>
-#include <netdb.h>
 #include <string.h>
+#include <unistd.h>
+#include <arpa/inet.h>
 #include <pthread.h>
 
-#define PORT 9090
-#define BUFF_SIZE 1024
+#define PORT 8080
+#define BUFFER_SIZE 1024
 
-void* received_msg(void *client_socket)
-{
-    int sock=*(int*)client_socket;
-    char buff[BUFF_SIZE];
-    int valread;
-
-    while((valread=read(sock, buff, BUFF_SIZE))>0)
-    {
-        buff[valread]='\0';
-        printf("%s\n", buff);
+void *receive_handler(void *sock) {
+    int sockfd = *((int *)sock);
+    char buffer[BUFFER_SIZE];
+    while (1) {
+        int receive = recv(sockfd, buffer, BUFFER_SIZE, 0);
+        if (receive > 0) {
+            printf("%s\n", buffer);
+        } else if (receive == 0) {
+            break;
+        } else {
+            perror("recv");
+        }
+        memset(buffer, 0, BUFFER_SIZE);
     }
-
     return NULL;
 }
 
-int main(int argc, char* argv[])
-{
-    // if(argc>2)
-    // {
-    //     fprintf(stderr, "USAGE: %s <port>");
-    //     exit(EXIT_FAILURE);
-    // }
-
-    // int port = atoi(argv[0]);
-
-    int client_sock;
+int main() {
+    int sockfd;
     struct sockaddr_in server_addr;
-    char msg[BUFF_SIZE];
-    pthread_t thread_id;
+    pthread_t recv_thread;
+    char buffer[BUFFER_SIZE];
 
-    client_sock=socket(AF_INET, SOCK_STREAM, 0);
-    if(client_sock<0)
-    {
-        perror("Socket");
-        exit(EXIT_FAILURE);
+    sockfd = socket(AF_INET, SOCK_STREAM, 0);
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+    server_addr.sin_port = htons(PORT);
+
+    if (connect(sockfd, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
+        perror("connect");
+        return 1;
     }
 
-    bzero(&server_addr, sizeof(server_addr));
-    server_addr.sin_family=AF_INET;
-    server_addr.sin_port=htons(PORT);
-    if(inet_pton(AF_INET, "127.0.0.1", &server_addr.sin_addr)<=0)
-    {
-        perror("[CLIENT] -> inet_pron");
-        exit(EXIT_FAILURE);
+    printf("Connected to server!\n");
+
+    pthread_create(&recv_thread, NULL, receive_handler, (void*)&sockfd);
+
+    while (1) {
+        fgets(buffer, BUFFER_SIZE, stdin);
+        send(sockfd, buffer, strlen(buffer), 0);
+        memset(buffer, 0, BUFFER_SIZE);
     }
 
-    if(connect(client_sock, (struct sockaddr*)&server_addr, sizeof(server_addr))<0)
-    {
-        perror("Connect");
-        exit(EXIT_FAILURE);
-    }
+    close(sockfd);
 
-    printf("Enter Username: ");
-    fgets(msg, BUFF_SIZE, stdin);
-    send(client_sock, msg, strlen(msg), 0);
-
-    pthread_create(&thread_id, NULL, received_msg, (void *)&client_sock);
-    pthread_detach(thread_id);
-
-    while(1)
-    {
-        fgets(msg, BUFF_SIZE, stdin);
-        send(client_sock, msg, strlen(msg), 0);
-    }
-    close(client_sock);
     return 0;
 }
