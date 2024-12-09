@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <signal.h>
 #include <arpa/inet.h>
 #include <pthread.h>
 
@@ -31,10 +32,12 @@ void str_trim_lf(char* arr, int length) {
 }
 
 void log_message(char *message) {
-    FILE *file = fopen(LOGFILE, "a");
-    if (file) {
-        fprintf(file, "%s\n", message);
-        fclose(file);
+    if (strncmp(message, "Client", 6) != 0) {
+        FILE *file = fopen(LOGFILE, "a");
+        if (file) {
+            fprintf(file, "%s\n", message);
+            fclose(file);
+        }
     }
 }
 
@@ -64,22 +67,27 @@ void send_log_to_client(int sockfd) {
     }
 }
 
-char* get_line_from_log(int line_number) {
+char* get_last_log_line() {
     FILE *file = fopen(LOGFILE, "r");
     if (!file) return NULL;
 
     char *line = malloc(BUFFER_SIZE);
-    int current_line = 0;
+    char *last_line = malloc(BUFFER_SIZE);
+    last_line[0] = '\0';
+
     while (fgets(line, BUFFER_SIZE, file)) {
-        if (++current_line == line_number) {
-            fclose(file);
-            str_trim_lf(line, strlen(line));
-            return line;
-        }
+        strcpy(last_line, line);
     }
 
     fclose(file);
     free(line);
+
+    if (strlen(last_line) > 0) {
+        str_trim_lf(last_line, strlen(last_line));
+        return last_line;
+    }
+
+    free(last_line);
     return NULL;
 }
 
@@ -109,8 +117,14 @@ void queue_remove(int uid) {
     pthread_mutex_unlock(&clients_mutex);
 }
 
+void handle_sigint(int sig) {
+    printf("\nCaught signal %d\n", sig);
+    exit(0);
+}
+
 void *handle_client(void *arg) {
     char buff_out[BUFFER_SIZE];
+    char reply_message[BUFFER_SIZE];
     int leave_flag = 0;
 
     client_t *cli = (client_t *)arg;
@@ -120,7 +134,6 @@ void *handle_client(void *arg) {
 
     sprintf(buff_out, "Client %d has joined\n", cli->uid);
     printf("%s", buff_out);
-    log_message(buff_out);
     send_message(buff_out, cli->uid);
 
     bzero(buff_out, BUFFER_SIZE);
@@ -133,19 +146,15 @@ void *handle_client(void *arg) {
         if (receive > 0) {
             str_trim_lf(buff_out, strlen(buff_out));
             if (strlen(buff_out) > 0) {
-                if (strncmp(buff_out, "/r ", 3) == 0) {
+                if (strncmp(buff_out, "/r: ", 4) == 0) {
                     // Process reply command
-                    int line_number = atoi(buff_out + 3);
-                    char *message_start = strchr(buff_out + 3, ' ');
-                    if (message_start) {
-                        message_start++; // Move past the space
-                        char *line_message = get_line_from_log(line_number);
-                        if (line_message) {
-                            sprintf(buff_out, "Replied to: %s -> %s", line_message, message_start);
-                            free(line_message);
-                        } else {
-                            sprintf(buff_out, "Invalid line number: %d", line_number);
-                        }
+                    strcpy(reply_message, buff_out + 4);
+                    char *last_log_line = get_last_log_line();
+                    if (last_log_line) {
+                        sprintf(buff_out, "Replied to: %s -> %s", last_log_line, reply_message);
+                        free(last_log_line);
+                    } else {
+                        sprintf(buff_out, "No previous message to reply to");
                     }
                 }
                 send_message(buff_out, cli->uid);
@@ -155,7 +164,6 @@ void *handle_client(void *arg) {
         } else if (receive == 0 || strcmp(buff_out, "exit") == 0) {
             sprintf(buff_out, "Client %d has left\n", cli->uid);
             printf("%s", buff_out);
-            log_message(buff_out);
             send_message(buff_out, cli->uid);
             leave_flag = 1;
         } else {
@@ -178,6 +186,9 @@ int main() {
     int sockfd, new_sockfd;
     struct sockaddr_in server_addr, client_addr;
     pthread_t tid;
+
+    // Handle SIGINT signal
+    signal(SIGINT, handle_sigint);
 
     sockfd = socket(AF_INET, SOCK_STREAM, 0);
     server_addr.sin_family = AF_INET;

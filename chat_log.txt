@@ -1,34 +1,6 @@
-Client 10 has joined
-
-Client 11 has joined
-
-Ay
-Yo
-How are things
-Ok
-Client 10 has left
-
-ok
-Client 11 has left
-
-Client 10 has joined
-
-Client 11 has joined
-
-/r 11
-Dam
-/r 11 Dam
-Client 11 has left
-
-Client 10 has left
-
-/Client 10 has joined
-
-Replied to: Dam -> d to: Dam -> 
-Dam
-Client 11 has joined
-
-Client 11 has left
-
-Client 10 has left
-
+1: Hey
+2: YO
+3: What's good
+4: Nothing much
+5: dam
+Replied to: 5: dam -> I know! Crazy
