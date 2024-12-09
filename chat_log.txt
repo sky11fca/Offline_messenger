@@ -1,6 +1,0 @@
-1: Hey
-2: YO
-3: What's good
-4: Nothing much
-5: dam
-Replied to: 5: dam -> I know! Crazy
