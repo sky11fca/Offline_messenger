@@ -5,86 +5,73 @@
 #include <arpa/inet.h>
 #include <pthread.h>
 
-#define PORT 8080
-#define BUFFER_SIZE 1024
+#define SERVER_IP "127.0.0.1"
+#define SERVER_PORT 8080
 
-void str_trim_lf(char* arr, int length) 
-{
-    for (int i = 0; i < length; i++) 
-    {
-        if (arr[i] == '\n') 
-        {
-            arr[i] = '\0';
-            break;
-        }
-    }
-}
+// Function to handle receiving messages from the server
+void *receive_messages(void *arg) {
+    int sockfd = *(int *)arg;
+    char buffer[1024];
+    int bytes_received;
 
-void *receive_handler(void *sock) 
-{
-    int sockfd = *((int *)sock);
-    char buffer[BUFFER_SIZE];
-    while (1) 
-    {
-        int receive = recv(sockfd, buffer, BUFFER_SIZE, 0);
-        if (receive > 0) 
-        {
-            printf("%s\n", buffer);
-        } 
-        else if (receive == 0) 
-        {
-            break;
-        } 
-        else 
-        {
-            perror("recv");
-        }
-        memset(buffer, 0, BUFFER_SIZE);
+    while ((bytes_received = recv(sockfd, buffer, sizeof(buffer) - 1, 0)) > 0) {
+        buffer[bytes_received] = '\0';
+        printf("%s", buffer);
     }
+
+    if (bytes_received == 0) {
+        printf("Server disconnected.\n");
+    } else {
+        perror("recv");
+    }
+
+    close(sockfd);
+    exit(EXIT_FAILURE);
     return NULL;
 }
 
 int main() {
     int sockfd;
-    struct sockaddr_in server_addr;
-    pthread_t recv_thread;
-    char buffer[BUFFER_SIZE];
+    struct sockaddr_in server_address;
+    char message[1024];
 
-    sockfd = socket(AF_INET, SOCK_STREAM, 0);
-
-    if(sockfd<0)
-    {
-        perror("[CLIENT] Socket");
+    // Create socket
+    if ((sockfd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
+        perror("Socket creation failed");
         exit(EXIT_FAILURE);
     }
 
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_addr.s_addr = inet_addr("127.0.0.1");
-    server_addr.sin_port = htons(PORT);
+    server_address.sin_family = AF_INET;
+    server_address.sin_port = htons(SERVER_PORT);
 
-    if (connect(sockfd, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) 
-    {
-        perror("[CLIENT] Connect");
-        return 1;
+    // Convert IPv4 and IPv6 addresses from text to binary form
+    if (inet_pton(AF_INET, SERVER_IP, &server_address.sin_addr) <= 0) {
+        perror("Invalid address/Address not supported");
+        exit(EXIT_FAILURE);
     }
 
-    printf("Connected to server!\n");
+    // Connect to the server
+    if (connect(sockfd, (struct sockaddr *)&server_address, sizeof(server_address)) < 0) {
+        perror("Connection failed");
+        exit(EXIT_FAILURE);
+    }
 
-    pthread_create(&recv_thread, NULL, receive_handler, (void*)&sockfd);
+    printf("Connected to the server.\n");
 
-    while (1) 
-    {
-        fgets(buffer, BUFFER_SIZE, stdin);
-        str_trim_lf(buffer, strlen(buffer));  
-        
-        if (strlen(buffer) > 0) 
-        {  
-            send(sockfd, buffer, strlen(buffer), 0);
+    // Create a thread to handle receiving messages
+    pthread_t recv_thread;
+    pthread_create(&recv_thread, NULL, receive_messages, &sockfd);
+
+    // Main loop to send messages to the server
+    while (1) {
+        fgets(message, sizeof(message), stdin);
+
+        if (send(sockfd, message, strlen(message), 0) < 0) {
+            perror("send");
+            break;
         }
-        memset(buffer, 0, BUFFER_SIZE);
     }
 
     close(sockfd);
-
     return 0;
 }

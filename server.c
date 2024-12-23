@@ -2,290 +2,202 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <signal.h>
-#include <arpa/inet.h>
 #include <pthread.h>
+#include <sys/socket.h>
+#include <sys/select.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <fcntl.h>
+#include <errno.h>
 
 #define PORT 8080
-#define MAX_CLIENTS 100
-#define BUFFER_SIZE 1024
-#define LOGFILE "chat_log.txt"
+#define MAX_CLIENTS 1024
+#define FILE_NAME ".logs.log"
 
-typedef struct 
-{
-    struct sockaddr_in address;
-    int sockfd;
-    int uid;
-} client_t;
+int client_sockets[MAX_CLIENTS];
+pthread_mutex_t client_sockets_mutex;
+pthread_mutex_t file_mutex;
 
-client_t *clients[MAX_CLIENTS];
-pthread_mutex_t clients_mutex = PTHREAD_MUTEX_INITIALIZER;
-static unsigned int clients_count = 0;
-static int uid = 10;
+// Function to save messages to the file
+void save_message_to_file(const char *message) {
+    pthread_mutex_lock(&file_mutex);
+    FILE *file = fopen(FILE_NAME, "a");
+    if (file) {
+        fprintf(file, "%s", message);
+        fclose(file);
+    } else {
+        perror("Failed to open file");
+    }
+    pthread_mutex_unlock(&file_mutex);
+}
 
-void str_trim_lf(char* arr, int length) 
-{
-    for (int i = 0; i < length; i++) 
-    {
-        if (arr[i] == '\n') 
-        {
-            arr[i] = '\0';
+// Function to get the last message from the file
+void get_last_message(char *last_message, size_t size) {
+    pthread_mutex_lock(&file_mutex);
+    FILE *file = fopen(FILE_NAME, "r");
+    if (file) {
+        char line[1024];
+        while (fgets(line, sizeof(line), file)) {
+            strncpy(last_message, line, size);
+        }
+        fclose(file);
+    } else {
+        perror("Failed to open file");
+        strcpy(last_message, "No previous messages");
+    }
+    pthread_mutex_unlock(&file_mutex);
+}
+
+// Function to broadcast a message to all clients
+void broadcast_message(const char *message, int sender_fd) {
+    pthread_mutex_lock(&client_sockets_mutex);
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+        if (client_sockets[i] != -1 && client_sockets[i] != sender_fd) {
+            send(client_sockets[i], message, strlen(message), 0);
+        }
+    }
+    pthread_mutex_unlock(&client_sockets_mutex);
+}
+
+// Function to handle client communication
+void *handle_client(void *arg) {
+    int client_fd = *(int *)arg;
+    free(arg);
+
+    char buffer[1024];
+    int bytes_read;
+
+    while ((bytes_read = recv(client_fd, buffer, sizeof(buffer) - 1, 0)) > 0) {
+        buffer[bytes_read] = '\0';
+        printf("Client %d: %s", client_fd, buffer);
+
+        if (strncmp(buffer, "/r ", 3) == 0) {
+            char last_message[1024];
+            get_last_message(last_message, sizeof(last_message));
+            char response[2048];
+            snprintf(response, sizeof(response), "Replied to [%s] -> %s", last_message, buffer + 3);
+            broadcast_message(response, client_fd);
+            save_message_to_file(response);
+        } else {
+            broadcast_message(buffer, client_fd);
+            save_message_to_file(buffer);
+        }
+    }
+
+    if (bytes_read == 0) {
+        printf("Client %d disconnected.\n", client_fd);
+    } else {
+        perror("recv");
+    }
+
+    close(client_fd);
+
+    // Remove the client from the list
+    pthread_mutex_lock(&client_sockets_mutex);
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+        if (client_sockets[i] == client_fd) {
+            client_sockets[i] = -1;
             break;
         }
     }
+    pthread_mutex_unlock(&client_sockets_mutex);
+
+    return NULL;
 }
 
-void log_message(char *message) 
-{
-    if (strncmp(message, "Client", 6) != 0) 
-    {
-        FILE *file = fopen(LOGFILE, "a");
-        if (file) 
-        {
-            fprintf(file, "%s\n", message);
-            fclose(file);
-        }
+int main() {
+    int server_fd, new_socket;
+    struct sockaddr_in address;
+    int addrlen = sizeof(address);
+    fd_set readfds;
+
+    // Initialize client sockets array
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+        client_sockets[i] = -1;
     }
-}
 
-void send_message(char *s, int uid) 
-{
-    pthread_mutex_lock(&clients_mutex);
-    for (int i = 0; i < MAX_CLIENTS; i++) 
-    {
-        if (clients[i]) 
-        {
-            if (clients[i]->uid != uid) 
-            {
-                if (write(clients[i]->sockfd, s, strlen(s)) < 0) 
-                {
-                    perror("[SERVER] write to descriptor failed");
+    pthread_mutex_init(&client_sockets_mutex, NULL);
+    pthread_mutex_init(&file_mutex, NULL);
+
+    // Create socket
+    if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) == 0) {
+        perror("socket failed");
+        exit(EXIT_FAILURE);
+    }
+
+    int opt = 1;
+    if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt))) {
+        perror("setsockopt");
+        exit(EXIT_FAILURE);
+    }
+
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = INADDR_ANY;
+    address.sin_port = htons(PORT);
+
+    if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) < 0) {
+        perror("bind failed");
+        exit(EXIT_FAILURE);
+    }
+
+    if (listen(server_fd, 3) < 0) {
+        perror("listen");
+        exit(EXIT_FAILURE);
+    }
+
+    printf("Server is listening on port %d\n", PORT);
+
+    while (1) {
+        FD_ZERO(&readfds);
+        FD_SET(server_fd, &readfds);
+        int max_sd = server_fd;
+
+        pthread_mutex_lock(&client_sockets_mutex);
+        for (int i = 0; i < MAX_CLIENTS; i++) {
+            if (client_sockets[i] > 0) {
+                FD_SET(client_sockets[i], &readfds);
+                if (client_sockets[i] > max_sd) {
+                    max_sd = client_sockets[i];
+                }
+            }
+        }
+        pthread_mutex_unlock(&client_sockets_mutex);
+
+        int activity = select(max_sd + 1, &readfds, NULL, NULL, NULL);
+
+        if ((activity < 0) && (errno != EINTR)) {
+            perror("select error");
+        }
+
+        // Check for new connections
+        if (FD_ISSET(server_fd, &readfds)) {
+            if ((new_socket = accept(server_fd, (struct sockaddr *)&address, (socklen_t *)&addrlen)) < 0) {
+                perror("accept");
+                exit(EXIT_FAILURE);
+            }
+
+            printf("New connection: socket fd %d, IP %s, port %d\n",
+                   new_socket, inet_ntoa(address.sin_addr), ntohs(address.sin_port));
+
+            pthread_mutex_lock(&client_sockets_mutex);
+            for (int i = 0; i < MAX_CLIENTS; i++) {
+                if (client_sockets[i] == -1) {
+                    client_sockets[i] = new_socket;
                     break;
                 }
             }
+            pthread_mutex_unlock(&client_sockets_mutex);
+
+            int *pclient = malloc(sizeof(int));
+            *pclient = new_socket;
+            pthread_t tid;
+            pthread_create(&tid, NULL, handle_client, pclient);
+            pthread_detach(tid);
         }
     }
-    pthread_mutex_unlock(&clients_mutex);
-}
 
-void send_log_to_client(int sockfd) 
-{
-    FILE *file = fopen(LOGFILE, "r");
-    if (file) 
-    {
-        char line[BUFFER_SIZE];
-        while (fgets(line, sizeof(line), file)) 
-        {
-            write(sockfd, line, strlen(line));
-        }
-        fclose(file);
-    }
-}
-
-char* get_last_log_line() 
-{
-    FILE *file = fopen(LOGFILE, "r");
-    if (!file) return NULL;
-
-    char *line = malloc(BUFFER_SIZE);
-    char *last_line = malloc(BUFFER_SIZE);
-    last_line[0] = '\0';
-
-    while (fgets(line, BUFFER_SIZE, file)) 
-    {
-        strcpy(last_line, line);
-    }
-
-    fclose(file);
-    free(line);
-
-    if (strlen(last_line) > 0) 
-    {
-        str_trim_lf(last_line, strlen(last_line));
-        return last_line;
-    }
-
-    free(last_line);
-    return NULL;
-}
-
-void queue_add(client_t *cl) 
-{
-    pthread_mutex_lock(&clients_mutex);
-    for (int i = 0; i < MAX_CLIENTS; i++) 
-    {
-        if (!clients[i]) 
-        {
-            clients[i] = cl;
-            clients_count++;
-            break;
-        }
-    }
-    pthread_mutex_unlock(&clients_mutex);
-}
-
-void queue_remove(int uid) 
-{
-    pthread_mutex_lock(&clients_mutex);
-    for (int i = 0; i < MAX_CLIENTS; i++) 
-    {
-        if (clients[i]) 
-        {
-            if (clients[i]->uid == uid) 
-            {
-                clients[i] = NULL;
-                clients_count--;
-                break;
-            }
-        }
-    }
-    pthread_mutex_unlock(&clients_mutex);
-}
-
-void handle_sigint(int sig) 
-{
-    printf("\nCaught signal %d\n", sig);
-    exit(0);
-}
-
-void *handle_client(void *arg) 
-{
-    char buff_out[BUFFER_SIZE];
-    char reply_message[BUFFER_SIZE];
-    int leave_flag = 0;
-
-    client_t *cli = (client_t *)arg;
-
-    send_log_to_client(cli->sockfd);
-
-    sprintf(buff_out, "Client %d has joined\n", cli->uid);
-    printf("%s", buff_out);
-    //send_message(buff_out, cli->uid);
-
-    bzero(buff_out, BUFFER_SIZE);
-
-    while (1) 
-    {
-        if (leave_flag) 
-        {
-            break;
-        }
-        int receive = recv(cli->sockfd, buff_out, BUFFER_SIZE, 0);
-        if (receive > 0) 
-        {
-            str_trim_lf(buff_out, strlen(buff_out));
-            if (strlen(buff_out) > 0) 
-            {
-                if (strncmp(buff_out, "/r: ", 4) == 0) 
-                {
-                    strcpy(reply_message, buff_out + 4);
-                    char *last_log_line = get_last_log_line();
-                    if (last_log_line) 
-                    {
-                        sprintf(buff_out, "Replied to: %s -> %s", last_log_line, reply_message);
-                        free(last_log_line);
-                    } 
-                    else 
-                    {
-                        sprintf(buff_out, "No previous message to reply to");
-                    }
-                }
-                send_message(buff_out, cli->uid);
-                printf("Client %d -> %s\n", cli->uid, buff_out);
-                log_message(buff_out);
-            }
-        } 
-        else if (receive == 0) 
-        {
-            sprintf(buff_out, "Client %d has left\n", cli->uid);
-            printf("%s", buff_out);
-            //send_message(buff_out, cli->uid);
-            leave_flag = 1;
-        } 
-        else 
-        {
-            printf("ERROR: -1\n");
-            leave_flag = 1;
-        }
-
-        bzero(buff_out, BUFFER_SIZE);
-    }
-
-    close(cli->sockfd);
-    queue_remove(cli->uid);
-    free(cli);
-    pthread_detach(pthread_self());
-
-    return NULL;
-}
-
-int main() 
-{
-    int sockfd, new_sockfd;
-    struct sockaddr_in server_addr, client_addr;
-    pthread_t tid;
-
-    signal(SIGINT, handle_sigint);
-
-    sockfd = socket(AF_INET, SOCK_STREAM, 0);
-
-    if(sockfd==-1)
-    {
-        perror("[SERVER] socket:");
-        exit(EXIT_FAILURE);
-    }
-    
-    int op=1;
-    setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &op, sizeof(op));
-
-    memset(&server_addr, 0, sizeof(server_addr));
-
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_addr.s_addr = INADDR_ANY;
-    server_addr.sin_port = htons(PORT);
-
-    if(bind(sockfd, (struct sockaddr*)&server_addr, sizeof(server_addr)))
-    {
-        perror("[SERVER] Bind");
-        exit(EXIT_FAILURE);
-    }
-
-    if (listen(sockfd, 10) < 0) 
-    {
-        perror("[SERVER] Listen");
-        exit(EXIT_FAILURE);
-    }
-
-    printf("=== WELCOME TO THE CHAT SERVER ===\n");
-
-    while (1) 
-    {
-        socklen_t clilen = sizeof(client_addr);
-        new_sockfd = accept(sockfd, (struct sockaddr*)&client_addr, &clilen);
-
-        if ((new_sockfd) < 0) 
-        {
-            perror("ERROR: accept");
-            return 1;
-        }
-
-        if ((clients_count + 1) == MAX_CLIENTS) 
-        {
-            printf("Max clients reached. Rejected: \n");
-            close(new_sockfd);
-            continue;
-        }
-
-        client_t *cli = (client_t *)malloc(sizeof(client_t));
-        cli->address = client_addr;
-        cli->sockfd = new_sockfd;
-        cli->uid = uid++;
-
-        queue_add(cli);
-        pthread_create(&tid, NULL, &handle_client, (void*)cli);
-
-        sleep(1);
-    }
-
+    close(server_fd);
+    pthread_mutex_destroy(&client_sockets_mutex);
+    pthread_mutex_destroy(&file_mutex);
     return 0;
 }
