@@ -3,75 +3,126 @@
 #include <string.h>
 #include <unistd.h>
 #include <arpa/inet.h>
+#include <ncurses.h>
 #include <pthread.h>
 
-#define SERVER_IP "127.0.0.1"
-#define SERVER_PORT 8080
+#define PORT 8080
+#define BUFFER_SIZE 1024
 
-// Function to handle receiving messages from the server
-void *receive_messages(void *arg) {
-    int sockfd = *(int *)arg;
-    char buffer[1024];
-    int bytes_received;
+WINDOW *message_win;
+WINDOW *input_win;
 
-    while ((bytes_received = recv(sockfd, buffer, sizeof(buffer) - 1, 0)) > 0) {
-        buffer[bytes_received] = '\0';
-        printf("%s", buffer);
+void *receive_messages(void *socket_fd) {
+    int sockfd = *(int *)socket_fd;
+    char buffer[BUFFER_SIZE];
+
+    while (1) {
+        int bytes_received = recv(sockfd, buffer, sizeof(buffer) - 1, 0);
+        if (bytes_received > 0) {
+            buffer[bytes_received] = '\0';
+
+            // Display received messages in the upper window
+            wprintw(message_win, "%s\n", buffer);
+            wrefresh(message_win);
+        } else if (bytes_received == 0) {
+            break;
+        } else {
+            perror("recv");
+            break;
+        }
     }
-
-    if (bytes_received == 0) {
-        printf("Server disconnected.\n");
-    } else {
-        perror("recv");
-    }
-
-    close(sockfd);
-    exit(EXIT_FAILURE);
     return NULL;
+}
+
+void init_windows() {
+    int row, col;
+    getmaxyx(stdscr, row, col);
+
+    message_win = newwin(row - 3, col, 0, 0);
+    input_win = newwin(3, col, row - 3, 0);
+
+    scrollok(message_win, TRUE);
+    box(input_win, 0, 0);
+
+    wrefresh(message_win);
+    wrefresh(input_win);
 }
 
 int main() {
     int sockfd;
-    struct sockaddr_in server_address;
-    char message[1024];
+    struct sockaddr_in server_addr;
+    pthread_t recv_thread;
 
-    // Create socket
-    if ((sockfd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
+    // Initialize ncurses
+    initscr();
+    cbreak();
+    noecho();
+    keypad(stdscr, TRUE);
+
+    // Initialize windows
+    init_windows();
+
+    // Setup connection
+    sockfd = socket(AF_INET, SOCK_STREAM, 0);
+    if (sockfd < 0) {
         perror("Socket creation failed");
         exit(EXIT_FAILURE);
     }
 
-    server_address.sin_family = AF_INET;
-    server_address.sin_port = htons(SERVER_PORT);
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(PORT);
+    server_addr.sin_addr.s_addr = inet_addr("127.0.0.1");
 
-    // Convert IPv4 and IPv6 addresses from text to binary form
-    if (inet_pton(AF_INET, SERVER_IP, &server_address.sin_addr) <= 0) {
-        perror("Invalid address/Address not supported");
-        exit(EXIT_FAILURE);
-    }
-
-    // Connect to the server
-    if (connect(sockfd, (struct sockaddr *)&server_address, sizeof(server_address)) < 0) {
+    if (connect(sockfd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
         perror("Connection failed");
         exit(EXIT_FAILURE);
     }
 
-    printf("Connected to the server.\n");
+    // Start thread to receive messages
+    pthread_create(&recv_thread, NULL, receive_messages, (void *)&sockfd);
 
-    // Create a thread to handle receiving messages
-    pthread_t recv_thread;
-    pthread_create(&recv_thread, NULL, receive_messages, &sockfd);
+    // Input area in ncurses
+    char input[BUFFER_SIZE];
+    int ch, pos = 0;
 
-    // Main loop to send messages to the server
     while (1) {
-        fgets(message, sizeof(message), stdin);
+        memset(input, 0, BUFFER_SIZE);
+        pos = 0;
 
-        if (send(sockfd, message, strlen(message), 0) < 0) {
-            perror("send");
+        while (1) {
+            werase(input_win);
+            box(input_win, 0, 0);
+            mvwprintw(input_win, 1, 1, "You: %s", input);
+            wrefresh(input_win);
+
+            ch = wgetch(input_win);
+
+            if (ch == '\n') {
+                break;
+            } else if (ch == 127 || ch == KEY_BACKSPACE) { // Handle backspace
+                if (pos > 0) {
+                    input[--pos] = '\0';
+                }
+            } else if (pos < BUFFER_SIZE - 1) {
+                input[pos++] = ch;
+                input[pos] = '\0';
+            }
+        }
+
+        // Send message to server
+        send(sockfd, input, strlen(input), 0);
+
+        // Exit on '/exit'
+        if (strcmp(input, "/exit") == 0) {
             break;
         }
     }
 
+    // Cleanup
+    pthread_cancel(recv_thread);
+    pthread_join(recv_thread, NULL);
     close(sockfd);
+    endwin();
+
     return 0;
 }

@@ -5,8 +5,8 @@
 #include <pthread.h>
 #include <sys/socket.h>
 #include <sys/select.h>
-#include <netinet/in.h>
 #include <arpa/inet.h>
+#include <netinet/in.h>
 #include <fcntl.h>
 #include <errno.h>
 
@@ -31,19 +31,16 @@ void save_message_to_file(const char *message) {
     pthread_mutex_unlock(&file_mutex);
 }
 
-// Function to get the last message from the file
-void get_last_message(char *last_message, size_t size) {
+// Function to get the contents of the log file
+void get_log_file(char *log_contents, size_t size) {
     pthread_mutex_lock(&file_mutex);
     FILE *file = fopen(FILE_NAME, "r");
     if (file) {
-        char line[1024];
-        while (fgets(line, sizeof(line), file)) {
-            strncpy(last_message, line, size);
-        }
+        fread(log_contents, 1, size, file);
         fclose(file);
     } else {
         perror("Failed to open file");
-        strcpy(last_message, "No previous messages");
+        strcpy(log_contents, "Log file is empty or unavailable.\n");
     }
     pthread_mutex_unlock(&file_mutex);
 }
@@ -52,7 +49,7 @@ void get_last_message(char *last_message, size_t size) {
 void broadcast_message(const char *message, int sender_fd) {
     pthread_mutex_lock(&client_sockets_mutex);
     for (int i = 0; i < MAX_CLIENTS; i++) {
-        if (client_sockets[i] != -1 && client_sockets[i] != sender_fd) {
+        if (client_sockets[i] != -1) {
             send(client_sockets[i], message, strlen(message), 0);
         }
     }
@@ -67,13 +64,18 @@ void *handle_client(void *arg) {
     char buffer[1024];
     int bytes_read;
 
+    // Send log file contents to the client upon connection
+    char log_contents[4096] = {0};
+    get_log_file(log_contents, sizeof(log_contents));
+    send(client_fd, log_contents, strlen(log_contents), 0);
+
     while ((bytes_read = recv(client_fd, buffer, sizeof(buffer) - 1, 0)) > 0) {
         buffer[bytes_read] = '\0';
         printf("Client %d: %s", client_fd, buffer);
 
         if (strncmp(buffer, "/r ", 3) == 0) {
             char last_message[1024];
-            get_last_message(last_message, sizeof(last_message));
+            get_log_file(last_message, sizeof(last_message));
             char response[2048];
             snprintf(response, sizeof(response), "Replied to [%s] -> %s", last_message, buffer + 3);
             broadcast_message(response, client_fd);

@@ -1,5 +1,5 @@
 debug:
-	gcc client.c -o client -g
+	gcc client.c -o client -g -lncurses
 	gcc server.c -o server -g -lsqlite3
 
 all:
