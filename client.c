@@ -12,6 +12,8 @@
 WINDOW *message_win;
 WINDOW *input_win;
 
+char username[1024];
+
 void *receive_messages(void *socket_fd) {
     int sockfd = *(int *)socket_fd;
     char buffer[BUFFER_SIZE];
@@ -53,6 +55,10 @@ int main() {
     struct sockaddr_in server_addr;
     pthread_t recv_thread;
 
+    printf("Enter a username: ");
+    fgets(username, sizeof(username), stdin);
+    username[strcspn(username, "\n")]=0;
+
     // Initialize ncurses
     initscr();
     cbreak();
@@ -78,6 +84,8 @@ int main() {
         exit(EXIT_FAILURE);
     }
 
+    //send(sockfd, username, strlen(username), 0);
+
     // Start thread to receive messages
     pthread_create(&recv_thread, NULL, receive_messages, (void *)&sockfd);
 
@@ -92,7 +100,7 @@ int main() {
         while (1) {
             werase(input_win);
             box(input_win, 0, 0);
-            mvwprintw(input_win, 1, 1, "You: %s", input);
+            mvwprintw(input_win, 1, 1, "%s: %s", username, input);
             wrefresh(input_win);
 
             ch = wgetch(input_win);
@@ -109,13 +117,17 @@ int main() {
             }
         }
 
-        // Send message to server
-        send(sockfd, input, strlen(input), 0);
-
-        // Exit on '/exit'
         if (strcmp(input, "/exit") == 0) {
             break;
         }
+
+        char message[1024];
+        snprintf(message, 1024, "<%s> %s", username, input);
+
+        // Send message to server
+        send(sockfd, message, strlen(message), 0);
+
+        
     }
 
     // Cleanup

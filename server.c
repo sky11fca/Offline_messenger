@@ -18,12 +18,39 @@ int client_sockets[MAX_CLIENTS];
 pthread_mutex_t client_sockets_mutex;
 pthread_mutex_t file_mutex;
 
+//reply function. last message
+void get_last_line(char* buffer)
+{
+    char message[1024];
+    FILE* file=fopen(FILE_NAME, "r");
+    if(!file){
+        strcpy(buffer, "No messages avalable!");
+        return;
+    }
+
+    char line[1024];
+    while(fgets(line, sizeof(line), file))
+    {
+        sscanf(line, "<%*[^>]> %[^\n]", message);
+        strcpy(buffer, message);
+    }
+    fclose(file);
+
+    
+
+    size_t len=strlen(buffer);
+    if(len>0 && buffer[len-1]=='\n')
+    {
+        buffer[len-1]='\0';
+    }
+}
+
 // Function to save messages to the file
 void save_message_to_file(const char *message) {
     pthread_mutex_lock(&file_mutex);
     FILE *file = fopen(FILE_NAME, "a");
     if (file) {
-        fprintf(file, "%s", message);
+        fprintf(file, "%s\n", message);
         fclose(file);
     } else {
         perror("Failed to open file");
@@ -62,6 +89,11 @@ void *handle_client(void *arg) {
     free(arg);
 
     char buffer[1024];
+    char username[1024];
+    char message[1024];
+
+    
+
     int bytes_read;
 
     // Send log file contents to the client upon connection
@@ -71,18 +103,21 @@ void *handle_client(void *arg) {
 
     while ((bytes_read = recv(client_fd, buffer, sizeof(buffer) - 1, 0)) > 0) {
         buffer[bytes_read] = '\0';
-        printf("Client %d: %s", client_fd, buffer);
-
-        if (strncmp(buffer, "/r ", 3) == 0) {
-            char last_message[1024];
-            get_log_file(last_message, sizeof(last_message));
-            char response[2048];
-            snprintf(response, sizeof(response), "Replied to [%s] -> %s", last_message, buffer + 3);
-            broadcast_message(response, client_fd);
-            save_message_to_file(response);
-        } else {
-            broadcast_message(buffer, client_fd);
-            save_message_to_file(buffer);
+        printf("Client %d: %s\n", client_fd, buffer);
+        sscanf(buffer, "<%[^>]> %[^\n]", username, message);
+        if(strcmp(buffer, "/exit")){
+            if (strncmp(message, "/r ", 3) == 0) {
+                char last_message[1024];
+                //get_log_file(last_message, sizeof(last_message));
+                get_last_line(last_message);
+                char response[2048];
+                snprintf(response, sizeof(response), "<%s> Replied to \"%s\"\n-> %s", username, last_message, message + 3);
+                broadcast_message(response, client_fd);
+                save_message_to_file(response);
+            } else {
+                broadcast_message(buffer, client_fd);
+                save_message_to_file(buffer);
+            }
         }
     }
 
