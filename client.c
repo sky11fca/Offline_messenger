@@ -8,11 +8,55 @@
 
 #define PORT 8080
 #define BUFFER_SIZE 1024
+#define USERS "database"
 
 WINDOW *message_win;
 WINDOW *input_win;
 
-char username[1024];
+
+
+int login(char* username)
+{
+    char line[BUFFER_SIZE];
+    char in[BUFFER_SIZE];
+    while(1){
+        printf("Enter username: ");
+        fgets(in, sizeof(in), stdin);
+        in[strcspn(in, "\n")]=0;
+
+        FILE* userdb=fopen(USERS, "r");
+        if(!userdb)
+        {
+            perror("FOPEN");
+            exit(EXIT_FAILURE);
+        }
+
+        int valid=0;
+
+        while(fgets(line, sizeof(line), userdb))
+        {
+            line[strcspn(line, "\n")]=0;
+            if(strcmp(line, in)==0)
+            {
+                valid=1;
+                strcpy(username, in);
+                break;
+            }
+        }
+
+        fclose(userdb);
+        
+        if(valid)
+        {
+            return 1;
+        }
+        else
+        {
+            printf("ERROR! User not in db, Try again!\n");
+        }
+    }
+
+}
 
 void *receive_messages(void *socket_fd) {
     int sockfd = *(int *)socket_fd;
@@ -54,10 +98,19 @@ int main() {
     int sockfd;
     struct sockaddr_in server_addr;
     pthread_t recv_thread;
+    char username[1024];
+    int try=0;
+    int success=0;
+    // printf("Enter a username: ");
+    // fgets(username, sizeof(username), stdin);
+    // username[strcspn(username, "\n")]=0;
+    if(!login(username))
+    {
+        perror("LOGIN");
+        exit(EXIT_FAILURE);
+    }
 
-    printf("Enter a username: ");
-    fgets(username, sizeof(username), stdin);
-    username[strcspn(username, "\n")]=0;
+
 
     // Initialize ncurses
     initscr();
