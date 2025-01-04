@@ -12,72 +12,134 @@
 
 #define PORT 8080
 #define MAX_CLIENTS 1024
-#define FILE_NAME ".logs.log"
+#define MAX_BUFFER 1024
+#define USERS "database"
+#define FRIENDS "friendlist"
 
 int client_sockets[MAX_CLIENTS];
 pthread_mutex_t client_sockets_mutex;
 pthread_mutex_t file_mutex;
 
-//reply function. last message
-void get_last_line(char* buffer)
+int in_friendlist(const char* name)
 {
-    char message[1024];
-    FILE* file=fopen(FILE_NAME, "r");
-    if(!file){
-        strcpy(buffer, "No messages avalable!");
-        return;
+    char line[MAX_BUFFER];
+    FILE* friend_list=fopen(FRIENDS, "r");
+    if(!friend_list)
+    {
+        perror("FOPEN");
+        exit(EXIT_FAILURE);
     }
 
-    char line[1024];
-    while(fgets(line, sizeof(line), file))
+    while(fgets(line, sizeof(line), friend_list))
     {
-        sscanf(line, "<%*[^>]> %[^\n]", message);
-        strcpy(buffer, message);
+        line[strcspn(line, "\n")]='\0';
+
+        if(strcmp(line, name)==0)
+        {
+            fclose(friend_list);
+            return 1;
+        }
     }
-    fclose(file);
+    fclose(friend_list);
+    return 0;
+}
 
-    
-
-    size_t len=strlen(buffer);
-    if(len>0 && buffer[len-1]=='\n')
+int in_database(const char* name)
+{
+    char line[MAX_BUFFER];
+    FILE* userdb=fopen(USERS, "r");
+    if(!userdb)
     {
-        buffer[len-1]='\0';
+        perror("FOPEN");
+        exit(EXIT_FAILURE);
+    }
+
+    while(fgets(line, sizeof(line), userdb))
+    {
+        line[strcspn(line, "\n")]='\0';
+
+        if(strcmp(line, name)==0)
+        {
+            fclose(userdb);
+            return 1;
+        }
+    }
+    fclose(userdb);
+    return 0;
+}
+
+
+void login(int client_fd, const char* username)
+{
+    int ok=0;
+    FILE* userdb=fopen(USERS, "r");
+    if(!userdb)
+    {
+        perror("FOPEN");
+        exit(EXIT_FAILURE);
+    }
+
+    char line[MAX_BUFFER];
+
+    while(fgets(line, sizeof(line), userdb))
+    {
+        line[strcspn(line, "\n")]='\0';
+        if(strcmp(line, username))
+        {
+            ok=1;
+            break;
+        }
+    }
+    fclose(userdb);
+
+    if(ok)
+    {
+        send(client_fd, "LOGIN_OK", 9, 0);
+    }
+    else
+    {
+        FILE* userdb2=fopen(USERS, "a");
+        fprintf(userdb2, "%s\n", username);
+        fclose(userdb2);
+
+        send(client_fd, "LOGIN_SIGNUP", 13, 0);
     }
 }
 
-// Function to save messages to the file
-void save_message_to_file(const char *message) {
-    pthread_mutex_lock(&file_mutex);
-    FILE *file = fopen(FILE_NAME, "a");
-    if (file) {
-        fprintf(file, "%s\n", message);
-        fclose(file);
-    } else {
-        perror("Failed to open file");
-    }
-    pthread_mutex_unlock(&file_mutex);
-}
+void friendlist(int client_fd, const char* username, const char* receiver)
+{
+    //receiver in friendlist -> CONTACT_OK
+    //receiver not in friend list but in database -> CONTACT_SIGNUP
+    //receiver not in both friend list and database -> CONTACT_ERR
 
-// Function to get the contents of the log file
-void get_log_file(char *log_contents, size_t size) {
-    pthread_mutex_lock(&file_mutex);
-    FILE *file = fopen(FILE_NAME, "r");
-    if (file) {
-        fread(log_contents, 1, size, file);
-        fclose(file);
-    } else {
-        perror("Failed to open file");
-        strcpy(log_contents, "Log file is empty or unavailable.\n");
+    if(in_friendlist(receiver))
+    {
+        send(client_fd, "CONTACT_OK", 11, 0);
     }
-    pthread_mutex_unlock(&file_mutex);
+    else if(!in_friendlist(receiver) && in_database(receiver))
+    {
+        FILE* friend_list=fopen(FRIENDS, "a");
+        fprintf(friend_list, "%s\n", receiver);
+        fclose(friend_list);
+        send(client_fd, "CONTACT_SIGNUP", 15, 0);
+    }
+    else
+    {
+        send(client_fd, "CONTACT_ERR", 12, 0);
+    }
+
+
 }
 
 // Function to broadcast a message to all clients
-void broadcast_message(const char *message, int sender_fd) {
+void broadcast_message(const char *message, int sender_fd, const char* username, const char* respondent) {
     pthread_mutex_lock(&client_sockets_mutex);
+    char finalbuff[1024];
+
+    snprintf(finalbuff, sizeof(finalbuff), "<%s> %s", username, message);
     for (int i = 0; i < MAX_CLIENTS; i++) {
         if (client_sockets[i] != -1) {
-            send(client_sockets[i], message, strlen(message), 0);
+            send(client_sockets[i], finalbuff, strlen(finalbuff), 0);
         }
     }
     pthread_mutex_unlock(&client_sockets_mutex);
@@ -90,35 +152,37 @@ void *handle_client(void *arg) {
 
     char buffer[1024];
     char username[1024];
+    char respondent[1024];
     char message[1024];
-
-    
 
     int bytes_read;
 
-    // Send log file contents to the client upon connection
-    char log_contents[4096] = {0};
-    get_log_file(log_contents, sizeof(log_contents));
-    send(client_fd, log_contents, strlen(log_contents), 0);
 
     while ((bytes_read = recv(client_fd, buffer, sizeof(buffer) - 1, 0)) > 0) {
         buffer[bytes_read] = '\0';
-        printf("Client %d: %s\n", client_fd, buffer);
-        sscanf(buffer, "<%[^>]> %[^\n]", username, message);
-        if(strcmp(buffer, "/exit")){
-            if (strncmp(message, "/r ", 3) == 0) {
-                char last_message[1024];
-                //get_log_file(last_message, sizeof(last_message));
-                get_last_line(last_message);
-                char response[2048];
-                snprintf(response, sizeof(response), "<%s> Replied to \"%s\"\n-> %s", username, last_message, message + 3);
-                broadcast_message(response, client_fd);
-                save_message_to_file(response);
-            } else {
-                broadcast_message(buffer, client_fd);
-                save_message_to_file(buffer);
-            }
+
+        if(strncmp(buffer, "LOGIN:", 6)==0)
+        {
+            sscanf(buffer, "LOGIN:%s", username);
+            printf("LOGIN CLIENT -> %s\n", username);
+            login(client_fd, username);
+
         }
+        else if(strncmp(buffer, "CONTACT:", 8)==0)
+        {
+            sscanf(buffer, "CONTACT:%[^:]:%s", username, respondent);
+            printf("CONTACT CLIENT -> %s, %s\n", username, respondent);
+            friendlist(client_fd, username, respondent);
+
+        }
+        else if(strncmp(buffer, "MESSAGE:", 8)==0)
+        {
+            sscanf(buffer, "MESSAGE:%[^:]:%[^:]:%[^\n]", username, respondent, message);
+            printf("MESSAGE CLIENT -> %s, %s : %s\n", username, respondent, message);
+            broadcast_message(message, client_fd, username, respondent);
+        }
+
+
     }
 
     if (bytes_read == 0) {

@@ -9,53 +9,32 @@
 #define PORT 8080
 #define BUFFER_SIZE 1024
 #define USERS "database"
+#define FRIENDS "friendlist"
 
 WINDOW *message_win;
 WINDOW *input_win;
 
+//TODO
+//FIX CLIENT BROADCASTS TO ALL CLIENT MESSAGES BUG
+//USE SQL DATABASE TO 
 
-
-int login(char* username)
+void get_friends_list()
 {
     char line[BUFFER_SIZE];
-    char in[BUFFER_SIZE];
-    while(1){
-        printf("Enter username: ");
-        fgets(in, sizeof(in), stdin);
-        in[strcspn(in, "\n")]=0;
+    FILE* contacts=fopen(FRIENDS, "r");
 
-        FILE* userdb=fopen(USERS, "r");
-        if(!userdb)
-        {
-            perror("FOPEN");
-            exit(EXIT_FAILURE);
-        }
-
-        int valid=0;
-
-        while(fgets(line, sizeof(line), userdb))
-        {
-            line[strcspn(line, "\n")]=0;
-            if(strcmp(line, in)==0)
-            {
-                valid=1;
-                strcpy(username, in);
-                break;
-            }
-        }
-
-        fclose(userdb);
-        
-        if(valid)
-        {
-            return 1;
-        }
-        else
-        {
-            printf("ERROR! User not in db, Try again!\n");
-        }
+    if(!contacts)
+    {
+        perror("FOPEN");
+        exit(EXIT_FAILURE);
     }
 
+    while(fgets(line, sizeof(line), contacts))
+    {
+        printf("%s", line);
+    }
+
+    fclose(contacts);
 }
 
 void *receive_messages(void *socket_fd) {
@@ -99,27 +78,10 @@ int main() {
     struct sockaddr_in server_addr;
     pthread_t recv_thread;
     char username[1024];
+    char respondent[1024];
     int try=0;
     int success=0;
-    // printf("Enter a username: ");
-    // fgets(username, sizeof(username), stdin);
-    // username[strcspn(username, "\n")]=0;
-    if(!login(username))
-    {
-        perror("LOGIN");
-        exit(EXIT_FAILURE);
-    }
 
-
-
-    // Initialize ncurses
-    initscr();
-    cbreak();
-    noecho();
-    keypad(stdscr, TRUE);
-
-    // Initialize windows
-    init_windows();
 
     // Setup connection
     sockfd = socket(AF_INET, SOCK_STREAM, 0);
@@ -137,11 +99,72 @@ int main() {
         exit(EXIT_FAILURE);
     }
 
-    //send(sockfd, username, strlen(username), 0);
+
+
+    printf("Enter Username: ");
+
+
+    char login_buff[BUFFER_SIZE];
+    char return_buff[BUFFER_SIZE];
+    char login_in[BUFFER_SIZE];
+    
+    fgets(login_in, sizeof(login_in), stdin);
+    login_in[strcspn(login_in, "\n")]='\0';
+    snprintf(login_buff, sizeof(login_buff), "LOGIN:%s", login_in);
+
+
+    send(sockfd, login_buff, strlen(login_buff), 0);
+    recv(sockfd, return_buff, BUFFER_SIZE, 0);
+
+    if(strncmp(return_buff, "LOGIN_OK", 9)==0)
+    {
+        strcpy(username, login_in);
+    }
+    else if(strncmp(return_buff, "LOGIN_SIGNUP", 13)==0)
+    {
+        strcpy(username, login_in);
+    }
+
+    printf("Select contacts:\n");
+    get_friends_list();
+    printf("-> ");
+
+    char receipient_buff[BUFFER_SIZE];
+    char receipient_input[BUFFER_SIZE];
+    char return_buff2[BUFFER_SIZE];
+
+    fgets(receipient_input, sizeof(receipient_input), stdin);
+    receipient_input[strcspn(receipient_input, "\n")]='\0';
+
+    snprintf(receipient_buff, sizeof(receipient_buff), "CONTACT:%s:%s", username, receipient_input);
+
+    send(sockfd, receipient_buff, strlen(receipient_buff), 0);
+    recv(sockfd, return_buff2, BUFFER_SIZE, 0);
+
+    if(strncmp(return_buff2, "CONTACT_OK", 11)==0 || strncmp(return_buff2, "CONTACT_SIGNUP", 15)==0)
+    {
+        strcpy(respondent, receipient_input);
+    }
+    else
+    {
+        perror("USERNAME NOT IN DATABASE!");
+        exit(EXIT_FAILURE);
+    }
+
+
 
     // Start thread to receive messages
     pthread_create(&recv_thread, NULL, receive_messages, (void *)&sockfd);
+    
+    
+    // Initialize ncurses
+    initscr();
+    cbreak();
+    noecho();
+    keypad(stdscr, TRUE);
 
+    // Initialize windows
+    init_windows();
     // Input area in ncurses
     char input[BUFFER_SIZE];
     int ch, pos = 0;
@@ -175,7 +198,7 @@ int main() {
         }
 
         char message[1024];
-        snprintf(message, 1024, "<%s> %s", username, input);
+        snprintf(message, sizeof(message), "MESSAGE:%s:%s:%s", username, respondent, input);
 
         // Send message to server
         send(sockfd, message, strlen(message), 0);
