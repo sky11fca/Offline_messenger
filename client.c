@@ -16,42 +16,30 @@ WINDOW *input_win;
 
 //TODO
 //FIX CLIENT BROADCASTS TO ALL CLIENT MESSAGES BUG
-//USE SQL DATABASE TO 
+// What happens if the user is found, but the password is different?
+//
 
-void get_friends_list()
+
+void *receive_messages(void *socket_fd) 
 {
-    char line[BUFFER_SIZE];
-    FILE* contacts=fopen(FRIENDS, "r");
-
-    if(!contacts)
-    {
-        perror("FOPEN");
-        exit(EXIT_FAILURE);
-    }
-
-    while(fgets(line, sizeof(line), contacts))
-    {
-        printf("%s", line);
-    }
-
-    fclose(contacts);
-}
-
-void *receive_messages(void *socket_fd) {
     int sockfd = *(int *)socket_fd;
     char buffer[BUFFER_SIZE];
 
-    while (1) {
+    while (1) 
+    {
         int bytes_received = recv(sockfd, buffer, sizeof(buffer) - 1, 0);
-        if (bytes_received > 0) {
+        if (bytes_received > 0) 
+        {
             buffer[bytes_received] = '\0';
-
-            // Display received messages in the upper window
             wprintw(message_win, "%s\n", buffer);
             wrefresh(message_win);
-        } else if (bytes_received == 0) {
+        } 
+        else if (bytes_received == 0) 
+        {
             break;
-        } else {
+        } 
+        else 
+        {
             perror("recv");
             break;
         }
@@ -59,7 +47,8 @@ void *receive_messages(void *socket_fd) {
     return NULL;
 }
 
-void init_windows() {
+void init_windows() 
+{
     int row, col;
     getmaxyx(stdscr, row, col);
 
@@ -73,7 +62,8 @@ void init_windows() {
     wrefresh(input_win);
 }
 
-int main() {
+int main() 
+{
     int sockfd;
     struct sockaddr_in server_addr;
     pthread_t recv_thread;
@@ -83,9 +73,9 @@ int main() {
     int success=0;
 
 
-    // Setup connection
     sockfd = socket(AF_INET, SOCK_STREAM, 0);
-    if (sockfd < 0) {
+    if (sockfd < 0) 
+    {
         perror("Socket creation failed");
         exit(EXIT_FAILURE);
     }
@@ -94,7 +84,8 @@ int main() {
     server_addr.sin_port = htons(PORT);
     server_addr.sin_addr.s_addr = inet_addr("127.0.0.1");
 
-    if (connect(sockfd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
+    if (connect(sockfd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) 
+    {
         perror("Connection failed");
         exit(EXIT_FAILURE);
     }
@@ -106,11 +97,18 @@ int main() {
 
     char login_buff[BUFFER_SIZE];
     char return_buff[BUFFER_SIZE];
-    char login_in[BUFFER_SIZE];
+    char login_username[BUFFER_SIZE];
+    char login_password[BUFFER_SIZE];
     
-    fgets(login_in, sizeof(login_in), stdin);
-    login_in[strcspn(login_in, "\n")]='\0';
-    snprintf(login_buff, sizeof(login_buff), "LOGIN:%s", login_in);
+    fgets(login_username, sizeof(login_username), stdin);
+    login_username[strcspn(login_username, "\n")]='\0';
+
+    printf("Enter a password (WILL ECHO): ");
+
+    fgets(login_password, sizeof(login_password), stdin);
+    login_password[strcspn(login_password, "\n")]='\0';
+    
+    snprintf(login_buff, sizeof(login_buff), "LOGIN:%s:%s", login_username, login_password);
 
 
     send(sockfd, login_buff, strlen(login_buff), 0);
@@ -118,15 +116,20 @@ int main() {
 
     if(strncmp(return_buff, "LOGIN_OK", 9)==0)
     {
-        strcpy(username, login_in);
+        strcpy(username, login_username);
     }
     else if(strncmp(return_buff, "LOGIN_SIGNUP", 13)==0)
     {
-        strcpy(username, login_in);
+        strcpy(username, login_username);
+    }
+    else if(strncmp(return_buff, "LOGIN_ERROR", 11)==0)
+    {
+        perror("LOGIN");
+        exit(EXIT_FAILURE);
     }
 
-    printf("Select contacts:\n");
-    get_friends_list();
+    printf("Select contacts (VIEW FRIENDLIST TEMPORARLY DISABLED!):\n");
+    //get_friends_list();
     printf("-> ");
 
     char receipient_buff[BUFFER_SIZE];
@@ -151,29 +154,33 @@ int main() {
         exit(EXIT_FAILURE);
     }
 
+    char gethist_buffer[BUFFER_SIZE];
 
-
-    // Start thread to receive messages
     pthread_create(&recv_thread, NULL, receive_messages, (void *)&sockfd);
     
     
-    // Initialize ncurses
     initscr();
     cbreak();
     noecho();
     keypad(stdscr, TRUE);
 
-    // Initialize windows
     init_windows();
-    // Input area in ncurses
+
+
+    snprintf(gethist_buffer, sizeof(gethist_buffer), "HISTORY:%s:%s", username, respondent);
+    send(sockfd, gethist_buffer, strlen(gethist_buffer), 0);
+
+
     char input[BUFFER_SIZE];
     int ch, pos = 0;
 
-    while (1) {
+    while (1) 
+    {
         memset(input, 0, BUFFER_SIZE);
         pos = 0;
 
-        while (1) {
+        while (1) 
+        {
             werase(input_win);
             box(input_win, 0, 0);
             mvwprintw(input_win, 1, 1, "%s: %s", username, input);
@@ -181,32 +188,37 @@ int main() {
 
             ch = wgetch(input_win);
 
-            if (ch == '\n') {
+            if (ch == '\n') 
+            {
                 break;
-            } else if (ch == 127 || ch == KEY_BACKSPACE) { // Handle backspace
-                if (pos > 0) {
+            } 
+            else if (ch == 127 || ch == KEY_BACKSPACE) 
+            { 
+                if (pos > 0) 
+                {
                     input[--pos] = '\0';
                 }
-            } else if (pos < BUFFER_SIZE - 1) {
+            } 
+            else if (pos < BUFFER_SIZE - 1) 
+            {
                 input[pos++] = ch;
                 input[pos] = '\0';
             }
         }
 
-        if (strcmp(input, "/exit") == 0) {
+        if (strcmp(input, "/exit") == 0) 
+        {
             break;
         }
 
         char message[1024];
         snprintf(message, sizeof(message), "MESSAGE:%s:%s:%s", username, respondent, input);
 
-        // Send message to server
         send(sockfd, message, strlen(message), 0);
 
         
     }
 
-    // Cleanup
     pthread_cancel(recv_thread);
     pthread_join(recv_thread, NULL);
     close(sockfd);
