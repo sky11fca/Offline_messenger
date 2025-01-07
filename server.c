@@ -24,6 +24,8 @@ int client_sockets[MAX_CLIENTS];
 pthread_mutex_t client_sockets_mutex;
 pthread_mutex_t file_mutex;
 
+char* connected_users[MAX_CLIENTS];
+
 int sha256_password(const char* input, char output[HASH_LENGTH+1])
 {
     unsigned char hash[SHA256_DIGEST_LENGTH];
@@ -80,7 +82,7 @@ void save_to_log(const char* sender, const char* receiver, const char* message)
     sqlite3_close(db);
 }
 
-void add_to_friendlist(const char* username, const char* receiver)
+void add_to_friendlist(int client_fd, const char* username, const char* receiver)
 {
     sqlite3 *db;
     sqlite3_stmt *stmt;
@@ -90,6 +92,7 @@ void add_to_friendlist(const char* username, const char* receiver)
 
     if(rc != SQLITE_OK)
     {
+        send(client_fd, "APPEND_FRIEND_ERR", 17, 0);
         perror("OPEN");
         exit(EXIT_FAILURE);
     }
@@ -98,6 +101,7 @@ void add_to_friendlist(const char* username, const char* receiver)
     rc = sqlite3_prepare_v2(db, sql, -1, &stmt, 0);
     if(rc != SQLITE_OK)
     {
+        send(client_fd, "APPEND_FRIEND_ERR", 17, 0);
         perror("OPEN");
         sqlite3_close(db);
         exit(EXIT_FAILURE);
@@ -109,10 +113,15 @@ void add_to_friendlist(const char* username, const char* receiver)
     rc = sqlite3_step(stmt);
     if(rc != SQLITE_DONE)
     {
+        send(client_fd, "APPEND_FRIEND_ERR", 17, 0);
         fprintf(stderr, "SQL error: %s\n", sqlite3_errmsg(db)); 
         sqlite3_finalize(stmt);
         sqlite3_close(db);
         exit(EXIT_FAILURE);
+    }
+    else
+    {
+        send(client_fd, "APPEND_FRIEND_OK", 16, 0);
     }
 
     sqlite3_finalize(stmt);
@@ -188,7 +197,47 @@ int in_database(const char* username)
     return exist;
 }
 
+void add_user(int client_fd, const char* username, const char* password)
+{
+    sqlite3* db;
+    sqlite3_stmt *stmt;
+    int rc;
 
+    rc=sqlite3_open(SQLDATABASE, &db);
+    if(rc!=SQLITE_OK)
+    {
+        send(client_fd, "SIGNUP_ERR", 10, 0);
+        perror("CANNOT OPEN DATABASE");
+        exit(EXIT_FAILURE);
+    }
+
+    const char *insert_sql = "INSERT INTO users (username, password) VALUES (?, ?)";
+    rc = sqlite3_prepare_v2(db, insert_sql, -1, &stmt, 0);
+    if(rc != SQLITE_OK)
+    {
+        send(client_fd, "SIGNUP_ERR", 10, 0);
+        perror("FAIL TO PREPARE SQL STATEMENT");
+        sqlite3_close(db);
+        exit(EXIT_FAILURE);
+    }
+
+    sqlite3_bind_text(stmt, 1, username, -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 2, password, -1, SQLITE_STATIC);
+
+    if(sqlite3_step(stmt)==SQLITE_DONE)
+    {
+        send(client_fd, "SIGNUP_OK", 9, 0);
+    }
+    else
+    {
+        send(client_fd, "SIGNUP_ERR", 10, 0);
+        perror("SIGNUP");
+        sqlite3_close(db);
+        exit(EXIT_FAILURE);
+    }
+    sqlite3_finalize(stmt);
+    sqlite3_close(db);
+}
 
 void login(int client_fd, const char* username, const char* password)
 {
@@ -199,6 +248,7 @@ void login(int client_fd, const char* username, const char* password)
     rc=sqlite3_open(SQLDATABASE, &db);
     if(rc!=SQLITE_OK)
     {
+        send(client_fd, "LOGIN_FAIL", 10, 0);
         perror("CANNOT OPEN DATABASE");
         exit(EXIT_FAILURE);
     }
@@ -208,6 +258,7 @@ void login(int client_fd, const char* username, const char* password)
     rc = sqlite3_prepare_v2(db, sql, -1, &stmt, 0);
     if(rc != SQLITE_OK)
     {
+        send(client_fd, "LOGIN_ERR", 9, 0);
         perror("FAIL TO PREPARE SQL STATEMENT");
         sqlite3_close(db);
         exit(EXIT_FAILURE);
@@ -250,31 +301,9 @@ void login(int client_fd, const char* username, const char* password)
 
         else
         {
-            const char *insert_sql = "INSERT INTO users (username, password) VALUES (?, ?)";
-            rc = sqlite3_prepare_v2(db, insert_sql, -1, &stmt, 0);
-            if(rc != SQLITE_OK)
-            {
-                perror("FAIL TO PREPARE SQL STATEMENT");
-                sqlite3_close(db);
-                exit(EXIT_FAILURE);
-            }
-
-            sqlite3_bind_text(stmt, 1, username, -1, SQLITE_STATIC);
-            sqlite3_bind_text(stmt, 2, password, -1, SQLITE_STATIC);
-
-            if(sqlite3_step(stmt)==SQLITE_DONE)
-            {
-                send(client_fd, "LOGIN_SIGNUP", 13, 0);
-            }
-            else
-            {
-                perror("SIGNUP");
-                exit(EXIT_FAILURE);
-            }
-            sqlite3_finalize(stmt);
+            send(client_fd, "LOGIN_SIGNUP", 13, 0);
         }
     }
-    //sqlite3_finalize(stmt);
     sqlite3_close(db);
 }
 
@@ -287,15 +316,46 @@ void friendlist(int client_fd, const char* username, const char* receiver)
     }
     else if(!in_friendlist(username, receiver) && in_database(receiver))
     {
-        add_to_friendlist(username, receiver);
+        //add_to_friendlist(username, receiver);
         send(client_fd, "CONTACT_SIGNUP", 15, 0);
     }
     else
     {
-        send(client_fd, "CONTACT_ERR", 12, 0);
+        send(client_fd, "CONTACT_FAIL", 12, 0);
     }
 
 
+}
+
+void get_friendlist(int client_fd, const char* username)
+{
+    sqlite3 *db;
+    sqlite3_stmt *stmt;
+    int rc;
+
+    rc = sqlite3_open(SQLDATABASE, &db);
+    if(rc!=SQLITE_OK)
+    {
+        perror("OPEN");
+        exit(EXIT_FAILURE);
+    }
+
+    const char *sql="SELECT friend FROM friendlist WHERE username = ?";
+
+    rc = sqlite3_prepare_v2(db, sql, -1, &stmt, 0);
+    if (rc != SQLITE_OK) {
+        perror("Failed to prepare SQL statement");
+        sqlite3_close(db);
+        exit(EXIT_FAILURE); 
+    }
+    
+    sqlite3_bind_text(stmt, 1, username, -1, SQLITE_STATIC);
+
+    while((rc=sqlite3_step(stmt))==SQLITE_ROW)
+    {
+        const char *friend = (const char*)sqlite3_column_text(stmt, 0);
+        send(client_fd, friend, strlen(friend), 0);
+    }
 }
 
 void get_chat_log(int client_fd, const char * username, const char* respondent)
@@ -326,7 +386,6 @@ void get_chat_log(int client_fd, const char * username, const char* respondent)
     sqlite3_bind_text(stmt, 4, username, -1, SQLITE_STATIC);
 
     char buff[MAX_BUFFER];
-    int msg_exist=0;
 
     while((rc=sqlite3_step(stmt))==SQLITE_ROW)
     {
@@ -336,7 +395,6 @@ void get_chat_log(int client_fd, const char * username, const char* respondent)
         snprintf(buff, MAX_BUFFER, "<%s> %s\n", sender, message);
 
         send(client_fd, buff, strlen(buff), 0);
-        msg_exist=1;
     }
 
     sqlite3_finalize(stmt);
@@ -373,7 +431,17 @@ void get_previous_message(const char* username, const char* respondent, char* pr
     while((rc=sqlite3_step(stmt))==SQLITE_ROW)
     {
         const char* message = (const char*)sqlite3_column_text(stmt, 1);
-        strcpy(previous_message, message);
+        
+        if(strncmp(message, "REPLIED TO", 10)==0)
+        {
+            char real_message[MAX_BUFFER];
+            sscanf(message, "REPLIED TO \"%*[^\"]\"\n -> %[^\n]", real_message);
+            strcpy(previous_message, real_message);
+        }
+        else
+        {
+            strcpy(previous_message, message);
+        }
     }
     sqlite3_finalize(stmt);
     sqlite3_close(db);
@@ -385,9 +453,10 @@ void broadcast_message(const char *message, int sender_fd, const char* username,
     char finalbuff[1024];
 
     snprintf(finalbuff, sizeof(finalbuff), "<%s> %s", username, message);
+    
     for (int i = 0; i < MAX_CLIENTS; i++) 
     {
-        if (client_sockets[i] != -1) 
+        if (client_sockets[i] != -1 && connected_users[i] != NULL && (strcmp(connected_users[i], username)==0 || strcmp(connected_users[i], respondent)==0)) 
         {
             send(client_sockets[i], finalbuff, strlen(finalbuff), 0);
         }
@@ -421,6 +490,18 @@ void *handle_client(void *arg) {
             printf("LOGIN CLIENT -> %s PASSWORD: %s\n", username, hash_password);
             login(client_fd, username, hash_password);
 
+            pthread_mutex_lock(&client_sockets_mutex);
+            for(int i=0; i<MAX_CLIENTS; i++)
+            {
+                if(client_sockets[i] == client_fd)
+                {
+                    connected_users[i]=strdup(username);
+                    break;
+                }
+            }
+
+            pthread_mutex_unlock(&client_sockets_mutex);
+
         }
         else if(strncmp(buffer, "CONTACT:", 8)==0)
         {
@@ -452,18 +533,23 @@ void *handle_client(void *arg) {
             sscanf(buffer, "HISTORY:%[^:]:%[^\n]", username, respondent);
             get_chat_log(client_fd, username, respondent);
         }
-        // else if(strncmp(buffer, "SIGNUP:", 7)==0)
-        // {
-
-        // }
-        // else if(strncmp(buffer, "APPEND_FRIEND:", 14)==0)
-        // {
-
-        // }
-        //else if(strncmp(buffer, "GET_FRIENDLIST:", 15)==0)
-        // {
-        //     //condition to return from the sql database, the list of friends base on the username key
-        // }
+        else if(strncmp(buffer, "SIGNUP:", 7)==0)
+        {
+            sscanf(buffer, "SIGNUP:%[^:]:%[^\n]", username, password);
+            sha256_password(password, hash_password);
+            add_user(client_fd, username, hash_password);
+        }
+        else if(strncmp(buffer, "APPEND_FRIEND:", 14)==0)
+        {
+            sscanf(buffer, "APPEND_FRIEND:%[^:]:%[^\n]", username, respondent);
+            add_to_friendlist(client_fd, username, respondent);
+        }
+        else if(strncmp(buffer, "GET_FRIENDLIST:", 15)==0)
+        {
+             //condition to return from the sql database, the list of friends base on the username key
+            sscanf(buffer, "GET_FRIENDLIST:%[^\n]", username);
+            get_friendlist(client_fd, username);
+        }
 
 
     }
@@ -485,6 +571,11 @@ void *handle_client(void *arg) {
         if (client_sockets[i] == client_fd) 
         {
             client_sockets[i] = -1;
+            if(connected_users[i])
+            {
+                free(connected_users[i]);
+                connected_users[i]=NULL;
+            }
             break;
         }
     }
@@ -502,6 +593,7 @@ int main() {
     for (int i = 0; i < MAX_CLIENTS; i++) 
     {
         client_sockets[i] = -1;
+        connected_users[i] = NULL;
     }
 
     pthread_mutex_init(&client_sockets_mutex, NULL);
