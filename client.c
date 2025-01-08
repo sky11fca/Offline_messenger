@@ -8,15 +8,9 @@
 
 #define PORT 8080
 #define BUFFER_SIZE 1024
-#define USERS "database"
-#define FRIENDS "friendlist"
 
 WINDOW *message_win;
 WINDOW *input_win;
-
-//TODO
-//FIX CLIENT BROADCASTS TO ALL CLIENT MESSAGES BUG
-
 
 
 void *receive_messages(void *socket_fd) 
@@ -68,8 +62,6 @@ int main()
     pthread_t recv_thread;
     char username[1024];
     char respondent[1024];
-    int try=0;
-    int success=0;
 
 
     sockfd = socket(AF_INET, SOCK_STREAM, 0);
@@ -89,9 +81,16 @@ int main()
         exit(EXIT_FAILURE);
     }
 
+    printf("\033[2J\033[H");
+    printf("WELLCOME TO THUNDERSTRUCK!!!\n");
+    printf("The Open Source Messaging client\n");
 
+    printf("------------------------------------------\n");
+    printf("INSTRUCTIONS:\n");
 
- 
+    printf("/r -> reply\n");
+    printf("/exit -> exit client\n");
+
 
 
     char login_buff[BUFFER_SIZE];
@@ -165,19 +164,30 @@ int main()
             exit(EXIT_FAILURE);
         }
     }
-    
-    //char getfriend_buff[BUFFER_SIZE];
-    printf("Select contacts:\n");
-    //snprintf(getfriend_buff, BUFFER_SIZE, "GET_FRIENDLIST:%s", username);
-    //send(sockfd, getfriend_buff, BUFFER_SIZE, 0);
-    
-    //int buff_size;
-    //char names[BUFFER_SIZE];
 
-    // while((buff_size=recv(sockfd, names, BUFFER_SIZE, 0))!=-1)
-    // {
-    //     printf("* %s\n", names);
-    // }
+    printf("\033[2J\033[H");
+    
+    char getfriend_buff[BUFFER_SIZE];
+    printf("Select contacts:\n");
+    snprintf(getfriend_buff, BUFFER_SIZE, "GET_FRIENDLIST:%s", username);
+    send(sockfd, getfriend_buff, BUFFER_SIZE, 0);
+    
+    int buff_size;
+    char names[BUFFER_SIZE];
+
+    while(1)
+    {
+        recv(sockfd, names, BUFFER_SIZE, 0);
+        if(strncmp(names, "FRIENDLIST_DONE", 15)==0)
+        {
+            break;
+        }
+        else
+        {
+            printf("* %s\n", names);
+        }
+    }
+
     printf("-> ");
 
     char receipient_buff[BUFFER_SIZE];
@@ -205,7 +215,7 @@ int main()
                 char opt[BUFFER_SIZE];
                 char append_buffer[BUFFER_SIZE];
                 char ret_buff4[BUFFER_SIZE];
-                printf("WARNING, Username not in friendlist, but the same user with same name exists in ot database Do you want to add him? (y/n) ");
+                printf("WARNING, Username not in friendlist, but the same user with same name exists in ot database \nDo you want to add him? (y/n) ");
 
                 fgets(opt, sizeof(opt), stdin);
                 opt[strcspn(opt, "\n")]='\0';
@@ -246,7 +256,7 @@ int main()
         
     }
     
-
+    printf("\033[2J\033[H");
     char gethist_buffer[BUFFER_SIZE];
 
     pthread_create(&recv_thread, NULL, receive_messages, (void *)&sockfd);

@@ -16,8 +16,6 @@
 #define MAX_CLIENTS 1024
 #define MAX_BUFFER 1024
 #define HASH_LENGTH 64
-#define USERS "database"
-#define FRIENDS "friendlist"
 #define SQLDATABASE "example_database.db"
 
 int client_sockets[MAX_CLIENTS];
@@ -316,7 +314,6 @@ void friendlist(int client_fd, const char* username, const char* receiver)
     }
     else if(!in_friendlist(username, receiver) && in_database(receiver))
     {
-        //add_to_friendlist(username, receiver);
         send(client_fd, "CONTACT_SIGNUP", 15, 0);
     }
     else
@@ -354,8 +351,13 @@ void get_friendlist(int client_fd, const char* username)
     while((rc=sqlite3_step(stmt))==SQLITE_ROW)
     {
         const char *friend = (const char*)sqlite3_column_text(stmt, 0);
-        send(client_fd, friend, strlen(friend), 0);
+        send(client_fd, friend, MAX_BUFFER, 0);
     }
+
+    sqlite3_finalize(stmt);
+    sqlite3_close(db);
+
+    send(client_fd, "FRIENDLIST_DONE", 15, 0);
 }
 
 void get_chat_log(int client_fd, const char * username, const char* respondent)
@@ -451,7 +453,6 @@ void broadcast_message(const char *message, int sender_fd, const char* username,
 {
     pthread_mutex_lock(&client_sockets_mutex);
     char finalbuff[1024];
-
     snprintf(finalbuff, sizeof(finalbuff), "<%s> %s", username, message);
     
     for (int i = 0; i < MAX_CLIENTS; i++) 
@@ -480,7 +481,8 @@ void *handle_client(void *arg) {
     int bytes_read;
 
 
-    while ((bytes_read = recv(client_fd, buffer, sizeof(buffer) - 1, 0)) > 0) {
+    while ((bytes_read = recv(client_fd, buffer, sizeof(buffer) - 1, 0)) > 0) 
+    {
         buffer[bytes_read] = '\0';
 
         if(strncmp(buffer, "LOGIN:", 6)==0)
@@ -520,7 +522,6 @@ void *handle_client(void *arg) {
                 snprintf(reply_buff, MAX_BUFFER, "REPLIED TO \"%s\"\n -> %s", previous_message, message+3);
                 broadcast_message(reply_buff, client_fd, username, respondent);
                 save_to_log(username, respondent, reply_buff);
-
             }
             else
             {
@@ -546,7 +547,6 @@ void *handle_client(void *arg) {
         }
         else if(strncmp(buffer, "GET_FRIENDLIST:", 15)==0)
         {
-             //condition to return from the sql database, the list of friends base on the username key
             sscanf(buffer, "GET_FRIENDLIST:%[^\n]", username);
             get_friendlist(client_fd, username);
         }
