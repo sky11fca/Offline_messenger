@@ -141,7 +141,7 @@ int main()
                     strcpy(username, login_username);
                     break;
                 }
-                else
+                else if(strncmp(ret_buff3, "SIGNUP_ERR", 10)==0)
                 {
                     perror("SIGNUP");
                     exit(EXIT_FAILURE);
@@ -226,12 +226,12 @@ int main()
                     send(sockfd, append_buffer, BUFFER_SIZE, 0);
                     recv(sockfd, ret_buff4, BUFFER_SIZE, 0);
 
-                    if(strncmp(ret_buff4, "APPEND_FRIEND_OK", 9)==0)
+                    if(strncmp(ret_buff4, "APPEND_FRIEND_OK", 17)==0)
                     {
                         strcpy(respondent, receipient_input);
                         break;
                     }
-                    else
+                    else if(strncmp(ret_buff4, "APPEND_FRIEND_ERR", 18)==0)
                     {
                         perror("ADD TO FRIENDLIST");
                         exit(EXIT_FAILURE);
@@ -243,10 +243,9 @@ int main()
                     printf("Sorry! Try Again\n-> ");
                 }
             }
-            else
+            else if(strncmp(return_buff2, "CONTACT_FAIL", 12)==0)
             {
-                perror("USERNAME NOT IN DATABASE!");
-                exit(EXIT_FAILURE);
+                perror("CONTACT");
             }
         }
         else

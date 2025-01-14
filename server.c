@@ -20,7 +20,7 @@
 
 int client_sockets[MAX_CLIENTS];
 pthread_mutex_t client_sockets_mutex;
-pthread_mutex_t file_mutex;
+//pthread_mutex_t file_mutex;
 
 char* connected_users[MAX_CLIENTS];
 
@@ -597,7 +597,7 @@ int main() {
     }
 
     pthread_mutex_init(&client_sockets_mutex, NULL);
-    pthread_mutex_init(&file_mutex, NULL);
+    //pthread_mutex_init(&file_mutex, NULL);
 
     if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) == 0) 
     {
@@ -688,6 +688,6 @@ int main() {
 
     close(server_fd);
     pthread_mutex_destroy(&client_sockets_mutex);
-    pthread_mutex_destroy(&file_mutex);
+    //pthread_mutex_destroy(&file_mutex);
     return 0;
 }
